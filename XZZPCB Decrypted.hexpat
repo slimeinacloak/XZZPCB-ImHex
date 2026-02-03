@@ -7,7 +7,7 @@ u32 end_pos; // Temp value used for image & net blocks
 u32 xored_data_length;
 if (std::mem::read_unsigned(0x10, 1) != 0x00) {
     std::print("Not de-xored!");
-    xored_data_length = std::mem::find_sequence(0, 0x76, 0x36, 0x76, 0x36, 0x35, 0x35, 0x35, 0x76, 0x36, 0x76, 0x36, 0x3D, 0x3D, 0x3D, 0xD7, 0xE8, 0xD6, 0xB5, 0x0A);
+    xored_data_length = std::mem::find_sequence(0, 0x76, 0x36, 0x76, 0x36, 0x35, 0x35, 0x35, 0x76, 0x36, 0x76, 0x36);
     if (xored_data_length == 4294967295) {
         xored_data_length = std::mem::size();
     }
@@ -77,12 +77,12 @@ struct type_02 {
     u32 block_size_type_02; // non-inclusive of type+size
     s32 x;
     s32 y;
-    s32 layer_a_radius;
-    s32 layer_b_radius;
+    s32 outer_radius;
+    s32 inner_radius;
     u32 layer_a_index;
     u32 layer_b_index;
     u32 net_index;
-    u32 via_text_length; // Is only 0 or 1, if 1 there is an extra u8
+    u32 via_text_length;
     char via_text[via_text_length];
 };
 
@@ -229,7 +229,7 @@ struct type_08 {
 
 // Test pad/drill hole
 struct type_09 {
-    u8 test_pad_type_identifier_09;
+    u8 type_identifier_09;
     u32 block_size;
     u32 pad_number;
     u32 x_origin;
@@ -250,6 +250,11 @@ struct type_09 {
     u32 unknown2;
     u8 flag4;
     u32 net_index;
+    if (block_size > 61) {
+        u32 reading_length;
+        char reading[reading_length];
+        padding[block_size-60-4-reading_length-name_length];
+    }
 }; 
 
 struct main_data_block {
@@ -543,11 +548,12 @@ struct post_v6 {
 
 file_header_s header @ 0;
 main_data_block main_data_block[while(!std::mem::eof())] @ $;
-images_block images @ $;
-net_block nets @ $;
-if (std::mem::eof()) { // To handle files without v6v655
-    return; 
-}
-v6v655 v6v655 @ $;
-find_seperator();
-post_v6 post_v6[while(!std::mem::eof())] @ $;
+//main_data_block main_data_block[28] @ $;
+//images_block images @ $;
+//net_block nets @ $;
+//if (std::mem::eof()) { // To handle files without v6v655
+//    return; 
+//}
+//v6v655 v6v655 @ $;
+//find_seperator();
+//post_v6 post_v6[while(!std::mem::eof())] @ $;
