@@ -67,8 +67,8 @@ struct type_01 {
     s32 r;
     s32 angle_start;
     s32 angle_end;
-    s32 scale;
-    s32 unknown_arc; // Havent seen not 0
+    s32 line_width;
+    padding[4]; // Always 0, no visible change
 };
 
 // Vias
@@ -121,7 +121,7 @@ struct type_05 {
 
 // Text
 struct type_06 {
-    u8 type_identifier_06;
+    u8 type_identifier_06; 
     u32 block_size; // non-inclusive of type+size
     u32 unknown_1;
     u32 pos_x;
@@ -146,7 +146,7 @@ struct part_sub_type_05 {
     u32 x2;
     u32 y2;
     u32 scale;
-    padding[4];
+    padding[4]; // no visible change
 };
 
 // Part sub type -> Labels/Part Names (0x06)
@@ -158,23 +158,29 @@ struct part_sub_type_06 {
     u32 y;
     u32 font_size;
     u32 font_scale;
-    padding[4];
-    u8 visibility; // 01 = Hidden, 02 = Visible
+    u32 text_rotation; // 900k, no visible change?
+    bool visibility; // 01 = Hidden, 02 = Visible
     u8 ps06_flag2; // 0 or 1? Unknown purpose
     u32 label_size;
     char type_06_label[label_size];
 };
 
 // Part sub type -> Pins (0x09)
+enum PinOutlineType : u8 {
+    NoneOrEnd, // 0x00
+    Circular, // 0x01
+    Rectangular // 0x02
+};
+
 struct pin_outline {
     if (std::mem::read_unsigned($, 4, 1) == 0 && std::mem::read_unsigned($+4, 1, 1) == 0) {
         u32 outline_end_u32;
-        u8 outline_end_type;
+        PinOutlineType pin_outline_type;
         break;
     } else {
         u32 pin_outline_x;
         u32 pin_outline_y;
-        u8 pin_outline_type; // 0x00 -> none/end, 0x01 -> circular, 0x02 -> rectangular
+        PinOutlineType pin_outline_type; // 0x00 -> none/end, 0x01 -> circular, 0x02 -> rectangular
     }
 };
 
@@ -182,11 +188,11 @@ u32 temp;
 struct part_sub_type_09 {
     u8 part_sub_type_identifier_09;
     u32 part_sub_type_09_block_size;
-    padding[4];
+    u32 layer_index; // 0 for not rendered
     u32 pin_x;
     u32 pin_y;
-    padding[4];
-    u32 pin_rotation;
+    padding[4]; // no visible change
+    u32 pin_name_scale; // no visible change
     u32 pin_name_size;
     char pin_name[pin_name_size];
     
@@ -201,25 +207,26 @@ struct part_sub_type_09 {
     padding[8];
 };
 
+// Part/pad main block
 struct type_07 {
     u8 type_identifier_07;
-    u32 t07_block_size;
+    u32 part_block_size; // includes padding at end of block - not self inclusive
     
-    u32 part_size;
-    padding[4];
+    u32 part_size; // doesnt include padding at end of block - not self inclusive?
+    padding[4]; // all 1, no visible change
     u32 part_x;
     u32 part_y;
-    u32 part_rotation;
-    u8 flag1; // all 1
+    u32 part_rotation; // only visible change when clicked on - degree*10000
+    bool part_label_visible; // duplicate value?
     u8 flag2; // all 0
-    u32 pad_size_length;
-    char pad_size[pad_size_length];
+    u32 footprint_label_length;
+    char footprint_label[footprint_label_length];
     
-    part_sub_type_06 subtype06[while($[$] == 0x06)];
-    part_sub_type_05 subtype05[while($[$] == 0x05)];
-    part_sub_type_09 subtype09[while($[$] == 0x09)];
-    
-    padding[t07_block_size-sizeof(this)+5];
+    part_sub_type_06 subtype06[while($[$] == 0x06)]; // Line Segment
+    part_sub_type_05 subtype05[while($[$] == 0x05)]; // Labels/Part Names
+    part_sub_type_09 subtype09[while($[$] == 0x09)]; // Pins
+     
+    padding[part_block_size-sizeof(this)+5];
 }; 
 
 // Not seen
@@ -289,7 +296,7 @@ struct main_data_block {
         type_09 TEST_PAD;
     } else {
         break;
-    }    
+    }
 };
 
 // Images
@@ -304,8 +311,8 @@ struct single_image {
 };
 
 struct images_block {
-    u32 block_size;
-    end_pos = $ + block_size;
+    u32 image_block_size;
+    end_pos = $ + image_block_size;
     single_image image[while($ < end_pos)];
 };
  
@@ -317,8 +324,8 @@ struct single_net {
 };
 
 struct net_block {
-    u32 block_size;
-    end_pos = $ + block_size;
+    u32 net_block_size;
+    end_pos = $ + net_block_size;
     single_net net[while($ != end_pos)];
 }; 
 
@@ -548,9 +555,9 @@ struct post_v6 {
 
 file_header_s header @ 0;
 main_data_block main_data_block[while(!std::mem::eof())] @ $;
-//main_data_block main_data_block[28] @ $;
-//images_block images @ $;
-//net_block nets @ $;
+//main_data_block main_data_block[104] @ $;
+images_block images @ header.image_block_start + 0x20;
+net_block nets @ header.net_block_start + 0x20;
 //if (std::mem::eof()) { // To handle files without v6v655
 //    return; 
 //}
