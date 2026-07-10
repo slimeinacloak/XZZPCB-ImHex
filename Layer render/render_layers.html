@@ -6,13 +6,11 @@
 
     <!-- External stylesheet -->
     <link rel="stylesheet" href="render_layers.css" />
-
-    <!-- svg-pan-zoom for effortless zooming & panning -->
-    <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
   </head>
   <body>
     <div id="controls">Loading…</div>
-    <svg id="pcb" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div id="info" hidden></div>
+    <canvas id="pcb"></canvas>
 
     <!-- Include CryptoJS for DES decryption -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
