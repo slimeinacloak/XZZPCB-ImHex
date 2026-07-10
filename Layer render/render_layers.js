@@ -1,7 +1,7 @@
 /* render_layers.js - Canvas 2D PCB renderer
  *
- * Loads PCB data (SEGMENT / ARC / VIA / part DATA) from switch2.json (or a
- * user-selected .json / .pcb file) and renders it to a single <canvas>.
+ * Loads PCB data (SEGMENT / ARC / VIA / part DATA) from a user-selected
+ * .json / .pcb file and renders it to a single <canvas>.
  *
  * Design: the parsers (raw_parser.js / part_data_parser.js) are untouched. We
  * build a retained "scene" once (fit-scale + Y-flip baked in, geometry compiled
@@ -1092,17 +1092,7 @@ function init() {
   canvas = document.getElementById("pcb");
   ctx = canvas.getContext("2d");
   setupInteraction();
-
-  fetch("switch2.json")
-    .then((res) => {
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.json();
-    })
-    .then(loadScene)
-    .catch((err) => {
-      console.warn("Automatic fetch failed:", err);
-      buildFileInput();
-    });
+  buildFileInput();
 }
 
 function buildFileInput() {
