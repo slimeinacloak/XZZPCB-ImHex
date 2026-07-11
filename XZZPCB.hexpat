@@ -3,62 +3,80 @@
 #include <std/mem.pat>
 #include <std/string.pat>
 
-u32 end_pos; // Temp value used for image & net blocks
-u32 xored_data_length;
+/*!
+    XZZPCB decoder
+    ==============
+
+    File layout:
+        0x00   file_header_s      fixed header
+        0x44   main data blocks   stream of type-tagged blocks, ending at
+                                   0x44 + main_data_blocks_size
+               images_block       image references (block may be empty)
+               net_block          net names
+               [ v6v655 ]         "v6v6555v6v6" marker                (disabled)
+               [ post_v6 ]        diode readings, menu, signal names,
+                                  part params                        (disabled)
+
+    Each main data block is tagged by a leading u8 type byte:
+        0x01  Arcs
+        0x02  Vias
+        0x03  Seen, purpose unknown
+        0x04  Not seen (no handling)
+        0x05  Line segments
+        0x06  Text
+        0x07  Parts & pads
+        0x08  Not seen (no handling)
+        0x09  Test pads / drill holes
+    Runs of 0x00 bytes between blocks are padding.
+
+    The `layer` field carried by several block types:
+        1..16   Trace layers (used in order, the last is always 16, e.g. 1,2,3,4,16)
+        17      Silkscreen
+        18..27  Unknown
+        28      Board edges
+
+    Encrypted (not de-xored) files carry a non-zero byte at 0x10
+*/
+
+// ---------------------------------------------------------------------------
+// De-xor guard: a de-xored file has 0x00 at offset 0x10. If it doesn't, we
+// can't parse it - print the size the data processor needs and stop.
+// ---------------------------------------------------------------------------
 if (std::mem::read_unsigned(0x10, 1) != 0x00) {
     std::print("Not de-xored!");
-    xored_data_length = std::mem::find_sequence(0, 0x76, 0x36, 0x76, 0x36, 0x35, 0x35, 0x35, 0x76, 0x36, 0x76, 0x36);
-    if (xored_data_length == 4294967295) {
+    u32 xored_data_length = std::mem::find_sequence(0, 0x76, 0x36, 0x76, 0x36, 0x35, 0x35, 0x35, 0x76, 0x36, 0x76, 0x36);
+    if (xored_data_length == 0xFFFFFFFF) { // marker sequence not found
         xored_data_length = std::mem::size();
     }
     std::print("In data processor import the .hexnode and use {} as the size interger", xored_data_length);
     return;
 };
 
-/**
-File header
+u32 end_pos; // Scratch: end offset of the image & net blocks
 
-Blocks identified by a u8
-0x01 -> Arcs
-0x02 -> Vias
-0x03 -> Seen but known yet
-0x04 -> Not seen
-0x05 -> Line segments
-0x06 -> Text
-0x07 -> PART & PADS
-0x08 -> Not seen
-0x09 -> Test pads/Drill holes12
-
-Image block size (Can be 0)
-Images
-Nets
-v6v6555v6v6
-Diode readings, menu, signal names, part params 
-*/
-
-
-u32 main_data_blocks_size @ 0x40;
-
+// ---------------------------------------------------------------------------
+// Header
+// ---------------------------------------------------------------------------
 struct file_header_s {
     char filetype_signature[11];
     padding[21];
     u32 header_addresses_size;
     u32 image_block_start; // Relative to 0x20
-    u32 net_block_start; // Relative to 0x20
+    u32 net_block_start;   // Relative to 0x20
     padding[20];
     u32 main_data_blocks_size;
 };
 
-/**
-Layers:
-    1->16   Trace Layers (Used in order excluding last which always uses 16, ie 1,2,3,4,16)
-    17      Silkscreen
-    18->27  Unknown
-    28      Board edges 
-*/
+// Size of the main data block stream (also mirrored inside the header). Placed
+// on its own so main_block_s can read it as the stream's end bound.
+u32 main_data_blocks_size @ 0x40;
 
-// Arcs
-struct type_01 {
+// ---------------------------------------------------------------------------
+// Main data block types
+// ---------------------------------------------------------------------------
+
+// 0x01 - Arcs
+struct arc_s {
     u8 type_identifier_01;
     u32 block_size; // non-inclusive of type+size
     u32 layer;
@@ -71,8 +89,8 @@ struct type_01 {
     s32 unknown_arc; // Havent seen not 0
 };
 
-// Vias
-struct type_02 {
+// 0x02 - Vias
+struct via_s {
     u8 type_identifier_02;
     u32 block_size_type_02; // non-inclusive of type+size
     s32 x;
@@ -86,8 +104,8 @@ struct type_02 {
     char via_text[via_text_length];
 };
 
-// Seen but unknown purpose
-struct type_03 {
+// 0x03 - Seen but purpose unknown
+struct unknown_03_s {
     u8 type_identifier_03;
     u32 block_size_type_03;
     u32 unknown; // Maybe net index? havent seen not 17
@@ -101,13 +119,13 @@ struct type_03 {
     u32 unknown3; // Havent seen not 0
 };
 
-// Not seen
-struct type_04 {
+// 0x04 - Not seen; no known layout beyond the type byte
+struct unhandled_04_s {
     u8 type_identifier_04;
 };
 
-// Line Segment
-struct type_05 {
+// 0x05 - Line segments
+struct segment_s {
     u8 type_identifier_05;
     u32 block_size; // non-inclusive of type+size
     u32 layer;
@@ -119,8 +137,8 @@ struct type_05 {
     u32 trace_net_index;
 };
 
-// Text
-struct type_06 {
+// 0x06 - Text
+struct text_s {
     u8 type_identifier_06;
     u32 block_size; // non-inclusive of type+size
     u32 unknown_1;
@@ -134,20 +152,20 @@ struct type_06 {
     char text[text_length];
 };
 
-// Part/pads
-struct type_07 {
+// 0x07 - Parts & pads (opaque payload)
+struct part_s {
     u8 type_identifier_07;
     u32 block_size;
     u8 data[block_size];
 };
 
-// Not seen
-struct type_08 {
+// 0x08 - Not seen; no known layout beyond the type byte
+struct unhandled_08_s {
     u8 type_identifier_08;
 };
 
-// Test pad/drill hole
-struct type_09 {
+// 0x09 - Test pad / drill hole
+struct test_pad_s {
     u8 type_identifier_09;
     u32 block_size;
     u32 pad_number;
@@ -172,46 +190,50 @@ struct type_09 {
     if (block_size > 61) {
         u32 reading_length;
         char reading[reading_length];
-        padding[block_size-60-4-reading_length-name_length];
+        padding[block_size - 60 - 4 - reading_length - name_length];
     }
-}; 
+};
 
-struct main_data_block {
+// One entry in the main data block stream. Dispatches on the leading type byte;
+// breaks out of the array once the stream is exhausted or an unknown tag shows.
+struct main_block_s {
     if (std::mem::eof()) {
         break;
     }
-    if ($ >= main_data_blocks_size + 0x44) { // Main data block over
+    if ($ >= main_data_blocks_size + 0x44) { // Past the end of the main data blocks
         break;
     }
-    
+
     if (std::mem::read_unsigned($, 4) == 0) {
-        padding[4];
-    } else if ($[$]  == 0x01) {
-        type_01 ARC;
+        padding[4]; // Run of zero padding between blocks
+    } else if ($[$] == 0x01) {
+        arc_s ARC;
     } else if ($[$] == 0x02) {
-        type_02 VIA;
+        via_s VIA;
     } else if ($[$] == 0x03) {
-        type_03 type03; // Still unknown purpose
+        unknown_03_s type03; // Still unknown purpose
     } else if ($[$] == 0x04) {
-        type_04 type04;
+        unhandled_04_s type04;
         std::error("Block type 0x04 found, no handling for this");
     } else if ($[$] == 0x05) {
-        type_05 SEGMENT;
+        segment_s SEGMENT;
     } else if ($[$] == 0x06) {
-        type_06 TEXT;    
+        text_s TEXT;
     } else if ($[$] == 0x07) {
-        type_07 DATA;
+        part_s DATA;
     } else if ($[$] == 0x08) {
-        type_08 type08;
+        unhandled_08_s type08;
         std::error("Block type 0x08 found, no handling for this");
     } else if ($[$] == 0x09) {
-        type_09 TEST_PAD;
+        test_pad_s TEST_PAD;
     } else {
         break;
-    }    
+    }
 };
 
+// ---------------------------------------------------------------------------
 // Images
+// ---------------------------------------------------------------------------
 struct single_image {
     u8 type;
     u8 index; // incrementing from 0
@@ -227,25 +249,38 @@ struct images_block {
     end_pos = $ + block_size;
     single_image image[while($ < end_pos)];
 };
- 
+
+// ---------------------------------------------------------------------------
 // Nets
+// ---------------------------------------------------------------------------
 struct single_net {
     u32 size; // inclusive
     u32 index; // incrementing from 1
-    char name[size-8];
+    char name[size - 8];
 };
 
 struct net_block {
     u32 block_size;
     end_pos = $ + block_size;
     single_net net[while($ != end_pos)];
-}; 
+};
 
-// v6v6555v6v6
+// ===========================================================================
+// Trailing sections (v6v655 / post_v6)
+//
+// Everything below decodes the metadata that follows the nets block: the
+// "v6v6555v6v6" marker and the diode/menu/signal/params sections. The parsing
+// is complete but the placements at the very bottom are left commented out, so
+// none of this runs by default. Enable them together when needed.
+// ===========================================================================
+
+// v6v6555v6v6 marker
 struct v6v655 {
     char v6v655[11];
 };
 
+// Returns the number of separator/terminator bytes at the cursor that end a
+// post_v6 record, or -1 if the record continues.
 fn break_post_v6() {
     if (std::mem::size() == $ + seperator_string_length) {
         return seperator_string_length;
@@ -304,7 +339,7 @@ struct post_v6_params {
         break;
     }
     if (std::mem::read_string($, seperator_string_length) == seperator_string) {
-        padding[seperator_string_length];    
+        padding[seperator_string_length];
     }
     char part_name[while(std::mem::read_unsigned($, 1) != 0x20)];
     padding[1];
@@ -335,27 +370,28 @@ struct post_v6_voltage {
     char voltage_reading[while(std::mem::read_string($, seperator_string_length) != seperator_string)];
 };
 
+// Record separator, discovered from the bytes at the cursor.
 str seperator_string;
 u8 seperator_string_length;
 fn find_seperator() {
     u8 p = 0;
-    while (p<20) {
-        if (std::mem::read_unsigned($+p, 1, 1) == 0x0A) {
+    while (p < 20) {
+        if (std::mem::read_unsigned($ + p, 1, 1) == 0x0A) {
             seperator_string = "\x0A";
             seperator_string_length = 1;
             std::print("Seperator = 0x0A");
             break;
-        } else if (std::mem::read_unsigned($+p, 2, 1) == 0x0A0D) {
+        } else if (std::mem::read_unsigned($ + p, 2, 1) == 0x0A0D) {
             seperator_string = "\x0A\x0D";
             seperator_string_length = 2;
             std::print("Seperator = 0x0A0D");
             break;
-        } else if (std::mem::read_unsigned($+p, 2, 1) == 0x0D0A) {
+        } else if (std::mem::read_unsigned($ + p, 2, 1) == 0x0D0A) {
             seperator_string = "\x0D\x0A";
             seperator_string_length = 2;
             std::print("Seperator = 0x0D0A");
             break;
-        } else if (std::mem::read_unsigned($+p, 1, 1) == 0x0D) {
+        } else if (std::mem::read_unsigned($ + p, 1, 1) == 0x0D) {
             seperator_string = "\x0D";
             seperator_string_length = 1;
             std::print("Seperator = 0x0D");
@@ -366,6 +402,7 @@ fn find_seperator() {
     }
 };
 
+// Maps a GB2312-encoded section header to an English tag.
 fn translate_string(str input) {
     if (input == "") {
         return "";
@@ -399,14 +436,13 @@ fn read_v6_header_string_length() {
     if (std::mem::read_unsigned($, 3, 1) == 0x3D3D3D) {
         return 0;
     }
-    while (std::mem::read_unsigned($+header_string_length, 1, 1) != 0x0D
-    && std::mem::read_unsigned($+header_string_length, 1, 1) != 0x0A
-    && std::mem::read_unsigned($+header_string_length, 1, 1) != 0x20) {
+    while (std::mem::read_unsigned($ + header_string_length, 1, 1) != 0x0D
+        && std::mem::read_unsigned($ + header_string_length, 1, 1) != 0x0A
+        && std::mem::read_unsigned($ + header_string_length, 1, 1) != 0x20) {
         header_string_length += 1;
-        
     }
-    if (std::mem::read_unsigned($+header_string_length, 1, 1) == 0x20) {
-            return 0; // For the param type which doesnt have a header :/
+    if (std::mem::read_unsigned($ + header_string_length, 1, 1) == 0x20) {
+        return 0; // For the param type which doesnt have a header :/
     } else {
         return header_string_length;
     }
@@ -422,12 +458,12 @@ struct post_v6 {
         std::print("Found header string \'{}\'", last_header_string_translated);
         skip_loop = true;
     }
-    
+
     if (std::mem::read_unsigned($, 3, 1) == 0x3D3D3D) {
         char seperator[3];
         skip_loop = true;
     }
-    
+
     if (!skip_loop) {
         std::print("Last header string: {}", last_header_string_translated);
         if (last_header_string_translated == "") {
@@ -436,43 +472,32 @@ struct post_v6 {
             post_v6_params params[while(!std::mem::eof())];
         }
         if (last_header_string_translated == "resistance") {
-            // resistance
             std::print("Found resistance block");
             post_v6_resistance resistance[while(!std::mem::eof())];
         }
         if (last_header_string_translated == "menu") {
-            // menu
             std::print("Found menu block");
             post_v6_menu menu[while(!std::mem::eof())];
-        } 
+        }
         if (last_header_string_translated == "signal") {
-            // signal
             std::print("Found signal block");
             post_v6_signal signals[while(!std::mem::eof())];
         }
         if (last_header_string_translated == "resistance diagram") {
-            // resistance diagram
             std::print("Found resistance diagram block");
             post_v6_resistance_diagram resistance_diagram[while(!std::mem::eof())];
         }
         if (last_header_string_translated == "voltage") {
-            // voltage
             std::print("Found voltage block");
             post_v6_voltage voltage[while(!std::mem::eof())];
         }
     }
 };
 
-///////////////////////////////////
-
+// ---------------------------------------------------------------------------
+// Placements
+// ---------------------------------------------------------------------------
 file_header_s header @ 0;
-main_data_block main_data_block[while(!std::mem::eof())] @ $;
-//main_data_block main_data_block[28] @ $;
-//images_block images @ $;
-//net_block nets @ $;
-//if (std::mem::eof()) { // To handle files without v6v655
-//    return; 
-//}
-//v6v655 v6v655 @ $;
-//find_seperator();
-//post_v6 post_v6[while(!std::mem::eof())] @ $;
+main_block_s main_data_block[while(!std::mem::eof())] @ $;
+images_block images @ $;
+net_block nets @ $;
