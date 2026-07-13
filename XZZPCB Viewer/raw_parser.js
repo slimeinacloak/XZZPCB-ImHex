@@ -86,12 +86,17 @@ class RawPCBParser {
     this.offset = 0x44;
   }
 
-  // Helper method to find sequence in array
-  findSequence(array, sequence) {
-    for (let i = 0; i <= array.length - sequence.length; i++) {
+  // Helper: find a byte sequence in a DataView. NOTE: a DataView has no .length
+  // and no index access - it must be read via .byteLength / .getUint8(). Using
+  // array semantics here silently makes the loop condition NaN, so the sequence
+  // is never found, the XOR fallback scrambles the whole file (including the
+  // plaintext post-v6 metadata), and post-v6 data fails to load on XORed files.
+  findSequence(view, sequence) {
+    const len = view.byteLength;
+    for (let i = 0; i <= len - sequence.length; i++) {
       let found = true;
       for (let j = 0; j < sequence.length; j++) {
-        if (array[i + j] !== sequence[j]) {
+        if (view.getUint8(i + j) !== sequence[j]) {
           found = false;
           break;
         }
