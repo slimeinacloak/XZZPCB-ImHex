@@ -10,13 +10,15 @@
   <body>
     <div id="controls">Loading…</div>
     <div id="info" hidden></div>
+    <div id="browser" hidden></div>
     <canvas id="pcb"></canvas>
 
     <!-- Include CryptoJS for DES decryption -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
 
-    <!-- Include the parsers -->
+    <!-- Include the parsers (obdata_parser must load before raw_parser uses it) -->
     <script src="part_data_parser.js"></script>
+    <script src="obdata_parser.js"></script>
     <script src="raw_parser.js"></script>
 
     <!-- Custom renderer logic -->

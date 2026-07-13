@@ -24,12 +24,14 @@ const PART_OUTLINE_COLOR = "#FF6B35";
 const TARGET_SIZE = 1000; // normalized world box (matches the old SVG viewBox)
 const BG_COLOR = "#001023";
 const HIGHLIGHT_COLOR = "#ffe14d"; // selected net, traces on visible layers
+const DATA_PIN_COLOR = "#39ff88"; // pins carrying additional data (diode/voltage/comment)
 const HIGHLIGHT_ALT_COLOR = "#ff4dff"; // fallback if a layer colour can't be parsed
 const HIGHLIGHT_ALT_DARKEN = 0.8; // hidden-layer net traces = their layer colour, darkened by this
 const DIM_ALPHA = 0.25; // opacity of everything else while a net is selected
 const DEFAULT_WIDTH_FACTOR = 0.4;
 const PICK_PX = 6; // hover/click tolerance in CSS pixels
 const VIA_TEXT_MIN_PX = 7; // hide via numbers below this on-screen radius
+const PIN_TEXT_MIN_PX = 6; // hide pin diode labels below this on-screen radius
 const ZOOM_SENSITIVITY = 0.0015; // wheel zoom feel (higher = more sensitive)
 
 // ---------------------------------------------------------------------------
@@ -46,11 +48,13 @@ const view = { k: 1, tx: 0, ty: 0, kFit: 1 };
 let widthFactor = DEFAULT_WIDTH_FACTOR;
 let showViaNumbers = true;
 let showPins = true;
+let highlightDataPins = false; // green-highlight pins that carry additional data
 let hoverNet = null;
 let selectedNet = null;
 let hoverInfo = null;
 let selectedInfo = null;
 let searchPins = null; // array of pin refs highlighted by a name search
+let browserCollapsed = false; // Parts/Nets panel collapsed state (persists across loads)
 
 // Cached highlight geometry, keyed by the net it was built for
 let highlightCache = { net: undefined, buckets: null };
@@ -90,6 +94,25 @@ function darken(color, factor) {
     b = +mm[3];
   }
   return `rgb(${Math.round(r * factor)}, ${Math.round(g * factor)}, ${Math.round(b * factor)})`;
+}
+
+// Natural sort by leading component/net name (port of obdata.py natural_sort_key):
+// split the first token into letter-prefix, number, remainder so R2 < R10.
+function naturalKey(name) {
+  const first = String(name).trim().split(/\s+/)[0] || "";
+  const m = first.match(/^([A-Za-z]*)(\d*)(.*)$/);
+  if (m) return [m[1].toUpperCase(), m[2] ? parseInt(m[2], 10) : 0, m[3]];
+  return [first, 0, ""];
+}
+function naturalCompare(a, b) {
+  const ka = naturalKey(a),
+    kb = naturalKey(b);
+  if (ka[0] < kb[0]) return -1;
+  if (ka[0] > kb[0]) return 1;
+  if (ka[1] !== kb[1]) return ka[1] - kb[1];
+  if (ka[2] < kb[2]) return -1;
+  if (ka[2] > kb[2]) return 1;
+  return 0;
 }
 
 // Group {x1,y1,x2,y2,w} line records into Path2D batches keyed by width.
@@ -132,6 +155,10 @@ function compileArcBuckets(arcs) {
 // ---------------------------------------------------------------------------
 function buildScene(json) {
   const raw = json?.main_data_block || [];
+  // Enrichment data from the obdata.py port (present only on the raw .pcb path;
+  // absent for ImHex-JSON input, so every lookup below is guarded).
+  const netIndexMap = json?.net_index_map || {};
+  const obdata = json?.obdata || null;
   const segments = [];
   const arcs = [];
   const vias = [];
@@ -298,9 +325,19 @@ function buildScene(json) {
   // --- Part DATA: sub_type_05 (outline lines) + sub_type_09 (pins) ---
   const pins = [];
   const pinPath = new Path2D();
+  const pinsByPart = new Map(); // refdes -> [pin] (for the browser "zoom to part")
   for (const part of dataBlocks) {
     if (!part.sub_blocks) continue;
-    const partName = part.header ? part.header.part_group_name : "";
+    // The reference designator (U3, R21) is the first sub_type_06 label; the
+    // header's part_group_name is really the pad/package descriptor. `odRef` is
+    // the exact key obdata.parts is built under (no fallback, matching
+    // ObdataParser.buildParts); `refName` adds a display fallback for the rare
+    // label-less part.
+    const groupName = part.header ? part.header.part_group_name : "";
+    const odRef =
+      typeof ObdataParser !== "undefined" ? ObdataParser.partRefName(part) : "";
+    const refName = odRef || groupName;
+    const odPart = obdata && obdata.parts ? obdata.parts[odRef] : null;
     for (const sb of part.sub_blocks) {
       if (sb.type === "sub_type_05") {
         const w = Math.max((sb.scale || 20000) * scale * 0.3, 0.5);
@@ -332,19 +369,43 @@ function buildScene(json) {
             diode = n.diode_reading || "";
           }
         }
+        // Overlay the merged obdata reading/voltage where available.
+        const pinName = sb.pin_name || "";
+        const od = odPart && odPart.pins ? odPart.pins[pinName] : null;
+        let voltage = "";
+        if (od) {
+          if (od.diode_reading != null && od.diode_reading !== "")
+            diode = od.diode_reading;
+          if (od.voltage != null) voltage = od.voltage;
+        }
+        const netName = netIndexMap[net];
+        const comment =
+          obdata && obdata.signal_descriptions
+            ? obdata.signal_descriptions[netName]
+            : undefined;
         const pin = {
           cx,
           cy,
           r,
           net,
-          pinName: sb.pin_name || "",
-          partName,
+          netName: netName || "",
+          pinName,
+          partName: refName,
+          package: groupName && groupName !== refName ? groupName : "",
           diode,
+          voltage,
+          comment: comment || "",
         };
         pins.push(pin);
         pinPath.moveTo(cx + r, cy);
         pinPath.arc(cx, cy, r, 0, Math.PI * 2);
         if (net != null && net > 0) netEntry(net).pins.push(pin);
+        let pl = pinsByPart.get(refName);
+        if (!pl) {
+          pl = [];
+          pinsByPart.set(refName, pl);
+        }
+        pl.push(pin);
       }
     }
   }
@@ -366,11 +427,47 @@ function buildScene(json) {
       startL: Math.min(v.layer_a_index, v.layer_b_index),
       endL: Math.max(v.layer_a_index, v.layer_b_index),
       net: v.net_index,
+      netName: netIndexMap[v.net_index] || "",
       text: v.via_text || "",
       visible: true,
     };
     viaList.push(via);
     if (via.net != null && via.net > 0) netEntry(via.net).vias.push(via);
+  }
+
+  // --- Net-level diode aggregation ---
+  // A diode reading characterises a whole net (electrical node), so a net's
+  // single agreed reading propagates to every pin/trace on it. If a net's pins
+  // carry *different* readings, that's a conflict - keep each pin's own reading
+  // only. Net 0 / unconnected pins are already excluded from netMap, so a board
+  // of independent readings on one "net" never falsely propagates.
+  for (const entry of netMap.values()) {
+    const distinct = new Set();
+    for (const p of entry.pins) if (p.diode) distinct.add(p.diode);
+    if (distinct.size === 1) entry.diode = [...distinct][0];
+    else if (distinct.size > 1) entry.diodeConflict = true;
+  }
+
+  // --- Effective per-pin reading + "additional data" highlight path ---
+  const dataPinPath = new Path2D();
+  for (const p of pins) {
+    const entry = p.net != null && p.net > 0 ? netMap.get(p.net) : null;
+    if (p.diode) {
+      p.effectiveDiode = p.diode; // own measured reading
+    } else if (entry && entry.diode && !entry.diodeConflict) {
+      p.effectiveDiode = entry.diode; // inherited from the net
+      p.diodeFromNet = true;
+    }
+    p.hasData = !!(
+      p.effectiveDiode ||
+      p.voltage ||
+      p.comment ||
+      (obdata && obdata.net_aliases && obdata.net_aliases[p.netName])
+    );
+    if (p.hasData) {
+      dataPinPath.moveTo(p.cx + p.r, p.cy);
+      dataPinPath.arc(p.cx, p.cy, p.r, 0, Math.PI * 2);
+    }
   }
 
   // --- Compile per-layer geometry into Path2D batches ---
@@ -380,14 +477,77 @@ function buildScene(json) {
     L.arcPaths = compileArcBuckets(L.arcs);
   }
 
+  // --- Browser lists (Parts / Nets) ---
+  const netAliases = (obdata && obdata.net_aliases) || {};
+  const signalDescs = (obdata && obdata.signal_descriptions) || {};
+  const netsList = [];
+  for (const idxStr of Object.keys(netIndexMap)) {
+    const index = Number(idxStr);
+    if (index === 0) continue; // UNCONNECTED
+    const name = netIndexMap[idxStr];
+    netsList.push({
+      index,
+      name,
+      alias: netAliases[name],
+      comment: signalDescs[name],
+    });
+  }
+  netsList.sort((a, b) => naturalCompare(a.name || "", b.name || ""));
+
+  const partsList = [];
+  if (obdata && obdata.parts) {
+    for (const ref of Object.keys(obdata.parts)) {
+      if (ref === "") continue;
+      const p = obdata.parts[ref];
+      partsList.push({
+        refName: ref,
+        alias: p.alias,
+        pkg: p.pad_desc,
+        pins: Object.keys(p.pins || {}).map((pn) => ({
+          pinName: pn,
+          net_index: p.pins[pn].net_index,
+          net_name: p.pins[pn].net_name,
+          diode_reading: p.pins[pn].diode_reading,
+          voltage: p.pins[pn].voltage,
+        })),
+      });
+    }
+  } else {
+    // Fallback (e.g. ImHex-JSON input): group the rendered pins by refdes.
+    const byRef = new Map();
+    for (const pin of pins) {
+      if (!pin.partName) continue;
+      let e = byRef.get(pin.partName);
+      if (!e) {
+        e = { refName: pin.partName, pins: [] };
+        byRef.set(pin.partName, e);
+      }
+      e.pins.push({
+        pinName: pin.pinName,
+        net_index: pin.net,
+        net_name: pin.netName,
+        diode_reading: pin.diode,
+        voltage: pin.voltage,
+      });
+    }
+    partsList.push(...byRef.values());
+  }
+  partsList.sort((a, b) => naturalCompare(a.refName || "", b.refName || ""));
+
   const s = {
     layerOrder,
     layers,
     vias: viaList,
     pins,
     pinPath,
+    dataPinPath,
     segments: flatSegments,
     netMap,
+    netIndexMap,
+    obdata,
+    partsList,
+    netsList,
+    pinsByPart,
     displayMap,
     bounds: { minX, minY, maxX, maxY, normWidth, normHeight },
     scale,
@@ -475,7 +635,8 @@ function pick(wx, wy, tol) {
       for (const item of arr) {
         const r = item.ref;
         if (item.kind === "pin") {
-          if (!showPins) continue; // only pick what is currently drawn
+          // only pick what is currently drawn (normal pins, or green data pins)
+          if (!showPins && !(highlightDataPins && r.hasData)) continue;
           const d = Math.hypot(wx - r.cx, wy - r.cy) - r.r;
           if (d <= tol) consider(d - 1e6, { type: "pin", ref: r }); // pins win ties
         } else if (item.kind === "via") {
@@ -633,6 +794,13 @@ function render() {
     ctx.fill(scene.pinPath);
   }
 
+  // Green-highlight pins carrying additional data. Drawn even when pin rendering
+  // is off, so the toggle can isolate just the data pins.
+  if (highlightDataPins && scene.dataPinPath) {
+    ctx.fillStyle = DATA_PIN_COLOR;
+    ctx.fill(scene.dataPinPath);
+  }
+
   // Highlight, search rings and via numbers draw at full strength.
   ctx.globalAlpha = 1;
 
@@ -698,6 +866,34 @@ function render() {
       ctx.font = `${(rPx * 0.6).toFixed(1)}px sans-serif`;
       ctx.fillText(v.labelA, cx - rPx / 2, cy);
       ctx.fillText(v.labelB, cx + rPx / 2, cy);
+    }
+  }
+
+  // Pin diode readings, drawn as text once zoomed in enough (CSS-pixel space,
+  // like via numbers). Shows the effective reading - a pin's own value or the
+  // one propagated from its net - with a dark outline so it stays legible over
+  // any pin colour. Off-screen pins are culled since there can be thousands.
+  {
+    const cssW = canvas.clientWidth;
+    const cssH = canvas.clientHeight;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+    for (const p of scene.pins) {
+      if (!p.effectiveDiode) continue;
+      const rPx = p.r * view.k;
+      if (rPx < PIN_TEXT_MIN_PX) continue;
+      const cx = worldToCssX(p.cx);
+      const cy = worldToCssY(p.cy);
+      if (cx < -40 || cx > cssW + 40 || cy < -20 || cy > cssH + 20) continue;
+      const fs = Math.min(Math.max(rPx * 1.1, 9), 16);
+      ctx.font = `${fs.toFixed(1)}px sans-serif`;
+      ctx.lineWidth = Math.max(fs / 5, 2);
+      ctx.strokeStyle = "rgba(0,0,0,0.85)";
+      ctx.strokeText(p.effectiveDiode, cx, cy);
+      ctx.fillStyle = "#eaffef";
+      ctx.fillText(p.effectiveDiode, cx, cy);
     }
   }
 }
@@ -807,16 +1003,40 @@ function netOf(hit) {
   return n != null && n > 0 ? n : null;
 }
 
+// "NAME (#index)" when a net name is known, "#index" otherwise, null for no net.
+function netLabel(index) {
+  if (index == null || index <= 0) return null;
+  const name = scene && scene.netIndexMap ? scene.netIndexMap[index] : null;
+  return name ? `${name} (#${index})` : `#${index}`;
+}
+
+// A net's propagated diode reading (its pins' single agreed value); null when
+// the net has no reading or its pins disagree.
+function netDiode(index) {
+  if (index == null || index <= 0 || !scene) return null;
+  const entry = scene.netMap.get(index);
+  return entry && entry.diode && !entry.diodeConflict ? entry.diode : null;
+}
+
 function infoOf(hit) {
   const r = hit.ref;
   if (hit.type === "pin") {
+    // effectiveDiode already resolves own vs net-inherited; mark inherited ones.
+    const diode = r.effectiveDiode
+      ? r.diodeFromNet
+        ? `${r.effectiveDiode} (net)`
+        : r.effectiveDiode
+      : undefined;
     return {
       title: "Pin",
       rows: [
         ["Part", r.partName],
         ["Pin", r.pinName],
-        ["Net", r.net],
-        ["Diode", r.diode],
+        ["Package", r.package],
+        ["Net", netLabel(r.net)],
+        ["Diode", diode],
+        ["Voltage", r.voltage],
+        ["Comment", r.comment],
       ],
     };
   }
@@ -824,7 +1044,8 @@ function infoOf(hit) {
     return {
       title: "Via",
       rows: [
-        ["Net", r.net],
+        ["Net", netLabel(r.net)],
+        ["Diode", netDiode(r.net)],
         ["Text", r.text],
         ["Layers", `${r.labelA} ↔ ${r.labelB}`],
       ],
@@ -834,7 +1055,8 @@ function infoOf(hit) {
   return {
     title: "Trace",
     rows: [
-      ["Net", r.net],
+      ["Net", netLabel(r.net)],
+      ["Diode", netDiode(r.net)],
       ["Layer", dn ? `Layer ${dn}` : `Layer ${r.layer}`],
     ],
   };
@@ -923,6 +1145,18 @@ function buildControls() {
   };
   controls.appendChild(pinBtn);
 
+  // Highlight pins with additional data (diode/voltage/comment) in green
+  const dataBtn = document.createElement("button");
+  dataBtn.textContent = "Data Pins";
+  dataBtn.classList.toggle("active", highlightDataPins);
+  dataBtn.style.setProperty("--layer-color", DATA_PIN_COLOR);
+  dataBtn.onclick = () => {
+    highlightDataPins = !highlightDataPins;
+    dataBtn.classList.toggle("active", highlightDataPins);
+    requestRender();
+  };
+  controls.appendChild(dataBtn);
+
   // Reset view
   const resetBtn = document.createElement("button");
   resetBtn.textContent = "Reset View";
@@ -1004,28 +1238,69 @@ function runSearch(q) {
     // Net index
     const net = parseInt(q, 10);
     selectedNet = net;
-    selectedInfo = { title: "Net", rows: [["Net", net]] };
+    selectedInfo = { title: "Net", rows: [["Net", netLabel(net) || `#${net}`]] };
     fitToNet(net);
   } else {
-    // Pin/part name substring
+    // Pin/part name (incl. alias) substring; fall back to net-name match.
     const needle = q.toLowerCase();
-    const matches = scene.pins.filter(
-      (p) =>
+    const aliasOf = (p) =>
+      scene.obdata && scene.obdata.parts && scene.obdata.parts[p.partName]
+        ? scene.obdata.parts[p.partName].alias
+        : null;
+    const matches = scene.pins.filter((p) => {
+      const alias = aliasOf(p);
+      return (
         (p.pinName && p.pinName.toLowerCase().includes(needle)) ||
-        (p.partName && p.partName.toLowerCase().includes(needle)),
-    );
-    searchPins = matches;
-    selectedInfo = {
-      title: "Search",
-      rows: [
-        ["Query", q],
-        ["Matches", matches.length],
-      ],
-    };
-    fitToPins(matches);
+        (p.partName && p.partName.toLowerCase().includes(needle)) ||
+        (alias && String(alias).toLowerCase().includes(needle))
+      );
+    });
+    if (matches.length) {
+      searchPins = matches;
+      selectedInfo = {
+        title: "Search",
+        rows: [
+          ["Query", q],
+          ["Matches", matches.length],
+        ],
+      };
+      fitToPins(matches);
+    } else {
+      // No pin/part hit - try net names (exact preferred, else first substring).
+      const idx = findNetByName(needle);
+      if (idx != null) {
+        selectedNet = idx;
+        selectedInfo = { title: "Net", rows: [["Net", netLabel(idx)]] };
+        fitToNet(idx);
+      } else {
+        selectedInfo = {
+          title: "Search",
+          rows: [
+            ["Query", q],
+            ["Matches", 0],
+          ],
+        };
+      }
+    }
   }
   updateInfoPanel();
   requestRender();
+}
+
+// Resolve a lowercase needle to a net index by name: exact match wins, else the
+// first substring match. Returns null if nothing matches.
+function findNetByName(needle) {
+  const map = scene.netIndexMap;
+  if (!map) return null;
+  let sub = null;
+  for (const idxStr of Object.keys(map)) {
+    const name = map[idxStr];
+    if (!name) continue;
+    const lower = name.toLowerCase();
+    if (lower === needle) return Number(idxStr);
+    if (sub == null && lower.includes(needle)) sub = Number(idxStr);
+  }
+  return sub;
 }
 
 function fitToNet(net) {
@@ -1066,6 +1341,220 @@ function fitToPoints(pts) {
   view.ty = ch / 2 - ((minY + maxY) / 2) * view.k;
 }
 
+// Pan (without zooming) so the bounding box of `pts` is centred in the view.
+function centerOnPoints(pts) {
+  if (!pts.length) return;
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
+  for (const [x, y] of pts) {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  const cw = canvas.clientWidth || 1;
+  const ch = canvas.clientHeight || 1;
+  view.tx = cw / 2 - ((minX + maxX) / 2) * view.k;
+  view.ty = ch / 2 - ((minY + maxY) / 2) * view.k;
+}
+
+// ---------------------------------------------------------------------------
+// Component / Net browser (right-hand panel)
+// ---------------------------------------------------------------------------
+function selectNet(index, name, alias, comment) {
+  selectedNet = index;
+  searchPins = null;
+  selectedInfo = {
+    title: "Net",
+    rows: [
+      ["Net", name ? `${name} (#${index})` : `#${index}`],
+      ["Alias", alias],
+      ["Comment", comment],
+    ],
+  };
+  fitToNet(index);
+  updateInfoPanel();
+  requestRender();
+}
+
+function focusPart(refName) {
+  const partPins = scene.pinsByPart.get(refName);
+  if (!partPins || !partPins.length) return;
+  selectedNet = null;
+  searchPins = partPins;
+  selectedInfo = {
+    title: "Part",
+    rows: [
+      ["Part", refName],
+      ["Pins", partPins.length],
+    ],
+  };
+  // Highlight and centre the part, but keep the current zoom so a small part
+  // isn't blown up to fill the window.
+  centerOnPoints(partPins.map((p) => [p.cx, p.cy]));
+  updateInfoPanel();
+  requestRender();
+}
+
+function buildBrowser() {
+  const el = document.getElementById("browser");
+  if (!el) return;
+  el.innerHTML = "";
+
+  const parts = scene.partsList || [];
+  const nets = scene.netsList || [];
+  if (!parts.length && !nets.length) {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+
+  let tab = "parts";
+
+  const tabs = document.createElement("div");
+  tabs.className = "browser-tabs";
+  const partsBtn = document.createElement("button");
+  partsBtn.textContent = `Parts (${parts.length})`;
+  const netsBtn = document.createElement("button");
+  netsBtn.textContent = `Nets (${nets.length})`;
+  tabs.appendChild(partsBtn);
+  tabs.appendChild(netsBtn);
+
+  const filter = document.createElement("input");
+  filter.type = "search";
+  filter.placeholder = "Filter…";
+
+  const list = document.createElement("div");
+  list.className = "browser-list";
+
+  const pinLine = (pin) => {
+    const netTxt = pin.net_name || (pin.net_index ? `#${pin.net_index}` : "");
+    const extra = [
+      pin.diode_reading ? `D:${pin.diode_reading}` : "",
+      pin.voltage ? `V:${pin.voltage}` : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const row = document.createElement("div");
+    row.className = "bi-pin";
+    row.innerHTML =
+      `<span class="info-key">${escapeHtml(pin.pinName)}</span>` +
+      `<span>${escapeHtml(netTxt)}${extra ? " · " + escapeHtml(extra) : ""}</span>`;
+    if (pin.net_index) {
+      row.onclick = (e) => {
+        e.stopPropagation();
+        selectNet(pin.net_index, pin.net_name);
+      };
+    }
+    return row;
+  };
+
+  const partRow = (p) => {
+    const d = document.createElement("details");
+    d.className = "browser-item";
+    const s = document.createElement("summary");
+    s.innerHTML =
+      `<span class="bi-name">${escapeHtml(p.refName)}</span>` +
+      (p.alias ? `<span class="bi-sub">${escapeHtml(String(p.alias))}</span>` : "") +
+      (p.pkg && p.pkg !== p.refName
+        ? `<span class="bi-sub">${escapeHtml(String(p.pkg))}</span>`
+        : "");
+    s.onclick = () => focusPart(p.refName);
+    d.appendChild(s);
+    const pinWrap = document.createElement("div");
+    pinWrap.className = "bi-pins";
+    for (const pin of p.pins) pinWrap.appendChild(pinLine(pin));
+    d.appendChild(pinWrap);
+    return d;
+  };
+
+  const netRow = (n) => {
+    const row = document.createElement("div");
+    row.className = "browser-item";
+    row.innerHTML =
+      `<span class="bi-name">${n.name ? escapeHtml(n.name) : "#" + n.index}</span>` +
+      `<span class="bi-sub">#${n.index}</span>` +
+      (n.alias ? `<div class="bi-sub">alias: ${escapeHtml(String(n.alias))}</div>` : "") +
+      (n.comment ? `<div class="bi-sub">${escapeHtml(String(n.comment))}</div>` : "");
+    row.onclick = () => selectNet(n.index, n.name, n.alias, n.comment);
+    return row;
+  };
+
+  const renderList = () => {
+    const needle = filter.value.trim().toLowerCase();
+    list.innerHTML = "";
+    if (tab === "parts") {
+      for (const p of parts) {
+        if (
+          needle &&
+          !(
+            p.refName.toLowerCase().includes(needle) ||
+            (p.alias && String(p.alias).toLowerCase().includes(needle)) ||
+            (p.pkg && String(p.pkg).toLowerCase().includes(needle))
+          )
+        )
+          continue;
+        list.appendChild(partRow(p));
+      }
+    } else {
+      for (const n of nets) {
+        const hay = `${n.name || ""} ${n.alias || ""} ${n.comment || ""} #${n.index}`.toLowerCase();
+        if (needle && !hay.includes(needle)) continue;
+        list.appendChild(netRow(n));
+      }
+    }
+  };
+
+  const setTab = (t) => {
+    tab = t;
+    partsBtn.classList.toggle("active", t === "parts");
+    netsBtn.classList.toggle("active", t === "nets");
+    renderList();
+  };
+  partsBtn.onclick = () => setTab("parts");
+  netsBtn.onclick = () => setTab("nets");
+  filter.oninput = renderList;
+
+  // Collapsible header: title + toggle. Collapsing hides the body, leaving just
+  // the header bar.
+  const header = document.createElement("div");
+  header.className = "browser-header";
+  const title = document.createElement("span");
+  title.className = "browser-title";
+  title.textContent = "Parts / Nets";
+  const toggle = document.createElement("button");
+  toggle.className = "browser-toggle";
+  header.appendChild(title);
+  header.appendChild(toggle);
+
+  const body = document.createElement("div");
+  body.className = "browser-body";
+  body.appendChild(tabs);
+  body.appendChild(filter);
+  body.appendChild(list);
+
+  const applyCollapse = () => {
+    el.classList.toggle("collapsed", browserCollapsed);
+    toggle.textContent = browserCollapsed ? "▸" : "▾";
+    toggle.setAttribute("aria-label", browserCollapsed ? "Expand" : "Collapse");
+  };
+  const toggleCollapse = () => {
+    browserCollapsed = !browserCollapsed;
+    applyCollapse();
+  };
+  toggle.onclick = toggleCollapse;
+  header.onclick = (e) => {
+    if (e.target !== toggle) toggleCollapse();
+  };
+
+  el.appendChild(header);
+  el.appendChild(body);
+  applyCollapse();
+  setTab(parts.length ? "parts" : "nets");
+}
+
 // ---------------------------------------------------------------------------
 // Top-level load
 // ---------------------------------------------------------------------------
@@ -1084,6 +1573,7 @@ function loadScene(json) {
   resizeCanvas();
   fitToBounds();
   buildControls();
+  buildBrowser();
   updateInfoPanel();
   requestRender();
 }
@@ -1098,6 +1588,8 @@ function init() {
 function buildFileInput() {
   const controls = document.getElementById("controls");
   controls.innerHTML = "";
+  const browser = document.getElementById("browser");
+  if (browser) browser.hidden = true;
 
   const info = document.createElement("span");
   info.textContent = "Select a JSON or PCB file: ";

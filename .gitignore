@@ -1,1 +1,16 @@
 .DS_Store
+
+# Python virtualenv + bytecode (obdata.py converter)
+.venv/
+__pycache__/
+*.pyc
+
+# obdata.py diagnostic output
+broken_files.txt
+bitmap_data_files.txt
+/PCB_Files
+/PCB_Files_Meta
+/Section_Examples
+/pattern-refactor
+/Section_Patterns
+/Parser CLI

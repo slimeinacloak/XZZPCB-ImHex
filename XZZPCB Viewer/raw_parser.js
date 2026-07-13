@@ -457,9 +457,25 @@ class RawPCBParser {
     this.parseFileHeader();
 
     const blocks = this.parseMainDataBlocks();
-    
+
+    // Enrich with net names + post-v6 metadata (obdata.py port). Best-effort:
+    // this.dataView still holds the de-XORed buffer the ObdataParser needs.
+    let netIndexMap = {};
+    let obdata = null;
+    if (typeof ObdataParser !== 'undefined') {
+      try {
+        const res = ObdataParser.build(this.dataView, blocks);
+        netIndexMap = res.net_index_map;
+        obdata = res.obdata;
+      } catch (err) {
+        console.warn('ObdataParser.build failed:', err);
+      }
+    }
+
     return {
-      main_data_block: blocks
+      main_data_block: blocks,
+      net_index_map: netIndexMap,
+      obdata: obdata
     };
   }
 }

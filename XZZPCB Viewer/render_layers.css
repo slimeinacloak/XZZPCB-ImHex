@@ -155,3 +155,164 @@ body {
   margin-right: 4px;
 }
 
+/* Component / Net browser (right-hand panel) */
+#browser {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  width: 300px;
+  max-height: calc(100vh - 20px);
+  display: flex;
+  flex-direction: column;
+  background: rgba(40, 40, 40, 0.92);
+  padding: 10px;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  z-index: 1000;
+  color: white;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  font-size: 0.82rem;
+}
+
+#browser[hidden] {
+  display: none;
+}
+
+.browser-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.browser-title {
+  font-weight: 600;
+}
+
+.browser-toggle {
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #333;
+  color: #ccc;
+  cursor: pointer;
+  font-size: 0.8rem;
+  line-height: 1;
+  padding: 2px 8px;
+}
+
+.browser-toggle:hover {
+  background: #444;
+}
+
+#browser.collapsed {
+  width: auto;
+}
+
+#browser.collapsed .browser-header {
+  margin-bottom: 0;
+}
+
+#browser.collapsed .browser-body {
+  display: none;
+}
+
+.browser-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.browser-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.browser-tabs button {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #333;
+  color: #ccc;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.browser-tabs button.active {
+  background: #555;
+  border-color: #777;
+  color: #fff;
+}
+
+#browser input[type='search'] {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 6px;
+  padding: 5px 8px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #222;
+  color: white;
+  font-size: 0.82rem;
+}
+
+.browser-list {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.browser-item {
+  padding: 5px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.browser-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.browser-item .bi-name {
+  font-weight: 600;
+}
+
+.browser-item .bi-sub {
+  color: #9aa;
+  margin-left: 6px;
+  font-weight: 400;
+}
+
+.browser-item summary {
+  cursor: pointer;
+  list-style: revert;
+}
+
+.browser-item summary::-webkit-details-marker {
+  color: #9aa;
+}
+
+.bi-pins {
+  margin: 3px 0 4px 12px;
+}
+
+.bi-pin {
+  display: flex;
+  gap: 8px;
+  padding: 1px 0;
+  cursor: pointer;
+}
+
+.bi-pin:hover {
+  color: #ffe14d;
+}
+
+.bi-pin .info-key {
+  color: #9aa;
+  min-width: 48px;
+}
+
