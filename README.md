@@ -6,6 +6,10 @@ With help from Paul Daniels ([@inflex](https://github.com/inflex)), Muerto ([@Mu
 
 (Decryption not necessary to open in my OBV fork, only used to examine the file structure in ImHex) 
 
+**XZZPCB Boardviewer**
+
+https://slimeinacloak.github.io/XZZPCB-ImHex/
+
 **XZZPCB_Decrypt.py usage:**
 
 Decrypt and write to single file:
