@@ -1,0 +1,46 @@
+name: Deploy board viewer to Pages
+
+# Publishes the contents of "XZZPCB Viewer/" as the GitHub Pages site.
+# Only that folder is deployed - the rest of the repo (PCB files, Python,
+# hexpats) is not published.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment; a newer push cancels an in-progress run.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Assemble site
+        run: |
+          mkdir -p _site
+          cp "XZZPCB Viewer/"* _site/
+          # Give the site a clean landing URL (render_layers.html stays too).
+          cp _site/render_layers.html _site/index.html
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
