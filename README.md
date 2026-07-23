@@ -6,7 +6,7 @@ https://slimeinacloak.github.io/XZZPCB-ImHex/
 
 Supports net view, trace layers if the board has them, diode readings
 
-My repair server for the latest XZZ files and more :) https://discord.gg/FHRrgfrNQ
+My repair server for the latest XZZ files and more :) https://discord.gg/TWU4vJwyht
 
 Support my future efforts to make repair tools and info free and open in the future :3 https://slimeinacloak.github.io/crypto
 
