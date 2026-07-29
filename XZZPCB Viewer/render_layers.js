@@ -41,8 +41,9 @@ let canvas, ctx;
 let dpr = 1;
 let scene = null;
 
-// View transform: screen_css = world * k + t
-const view = { k: 1, tx: 0, ty: 0, kFit: 1 };
+// View transform: screen_css = k * (B * world) + t, where B is the 2x2 basis
+// from currentBasis() (rotation in 90-deg steps + optional horizontal mirror).
+const view = { k: 1, tx: 0, ty: 0, kFit: 1, rot: 0, mirror: false };
 
 // Render toggles / interaction state
 let widthFactor = DEFAULT_WIDTH_FACTOR;
@@ -55,6 +56,15 @@ let hoverInfo = null;
 let selectedInfo = null;
 let searchPins = null; // array of pin refs highlighted by a name search
 let browserCollapsed = false; // Parts/Nets panel collapsed state (persists across loads)
+
+// Rotate/Mirror toolbar buttons, kept so keyboard shortcuts can sync their
+// label/active state without rebuilding the whole controls panel.
+let rotateBtnEl = null;
+let mirrorBtnEl = null;
+function syncOrientationButtons() {
+  if (rotateBtnEl) rotateBtnEl.textContent = `Rotate (${view.rot * 90}°)`;
+  if (mirrorBtnEl) mirrorBtnEl.classList.toggle("active", view.mirror);
+}
 
 // Cached highlight geometry, keyed by the net it was built for
 let highlightCache = { net: undefined, buckets: null };
@@ -686,17 +696,83 @@ function fitToBounds() {
   const { normWidth, normHeight } = scene.bounds;
   const cw = canvas.clientWidth || 1;
   const ch = canvas.clientHeight || 1;
-  const k = Math.min(cw / normWidth, ch / normHeight) * 0.95;
-  view.k = k;
+  // A 90-deg-rotated axis-aligned box has swapped screen-space extents;
+  // mirroring never changes them.
+  const rotated = (view.rot & 1) === 1;
+  const extW = rotated ? normHeight : normWidth;
+  const extH = rotated ? normWidth : normHeight;
+  const k = Math.min(cw / extW, ch / extH) * 0.95;
   view.kFit = k;
-  view.tx = (cw - normWidth * k) / 2;
-  view.ty = (ch - normHeight * k) / 2;
+  centerViewOn(normWidth / 2, normHeight / 2, k);
 }
 
-const worldToCssX = (wx) => wx * view.k + view.tx;
-const worldToCssY = (wy) => wy * view.k + view.ty;
-const cssToWorldX = (cx) => (cx - view.tx) / view.k;
-const cssToWorldY = (cy) => (cy - view.ty) / view.k;
+// Linear part of the view transform: rotation in 90-deg steps (applied after
+// an optional horizontal mirror). All entries are 0/+-1, so this is a plain
+// lookup - no trig at render/interaction time. screen_pre_scale = B * world.
+const BASIS_TABLE = [
+  // rot=0
+  [
+    { a: 1, b: 0, c: 0, d: 1 }, // mirror off
+    { a: -1, b: 0, c: 0, d: 1 }, // mirror on
+  ],
+  // rot=1 (90 deg)
+  [
+    { a: 0, b: 1, c: -1, d: 0 },
+    { a: 0, b: 1, c: 1, d: 0 },
+  ],
+  // rot=2 (180 deg)
+  [
+    { a: -1, b: 0, c: 0, d: -1 },
+    { a: 1, b: 0, c: 0, d: -1 },
+  ],
+  // rot=3 (270 deg)
+  [
+    { a: 0, b: -1, c: 1, d: 0 },
+    { a: 0, b: -1, c: -1, d: 0 },
+  ],
+];
+const currentBasis = () => BASIS_TABLE[view.rot & 3][view.mirror ? 1 : 0];
+
+// world -> CSS pixels, and back, under the full k/rotate/mirror/translate view.
+function worldToCss(wx, wy) {
+  const { a, b, c, d } = currentBasis();
+  return [
+    view.k * (a * wx + c * wy) + view.tx,
+    view.k * (b * wx + d * wy) + view.ty,
+  ];
+}
+function cssToWorld(cx, cy) {
+  const { a, b, c, d } = currentBasis();
+  const det = a * d - b * c; // always +-1
+  const ux = (cx - view.tx) / view.k;
+  const uy = (cy - view.ty) / view.k;
+  return [(d * ux - c * uy) / det, (-b * ux + a * uy) / det];
+}
+
+// Set rotation/mirror while keeping whatever world point is currently at the
+// center of the canvas still centered afterwards (so toggling spins/flips
+// the board in place instead of jumping the view).
+function setOrientation(newRot, newMirror) {
+  const cw = canvas.clientWidth || 1;
+  const ch = canvas.clientHeight || 1;
+  const [wx, wy] = cssToWorld(cw / 2, ch / 2);
+  view.rot = newRot & 3;
+  view.mirror = newMirror;
+  const { a, b, c, d } = currentBasis();
+  view.tx = cw / 2 - view.k * (a * wx + c * wy);
+  view.ty = ch / 2 - view.k * (b * wx + d * wy);
+}
+
+// Point the view (pan + zoom, not rotation) so that world point
+// (cxWorld, cyWorld) is centered on screen at scale k.
+function centerViewOn(cxWorld, cyWorld, k) {
+  const cw = canvas.clientWidth || 1;
+  const ch = canvas.clientHeight || 1;
+  const { a, b, c, d } = currentBasis();
+  view.k = k;
+  view.tx = cw / 2 - k * (a * cxWorld + c * cyWorld);
+  view.ty = ch / 2 - k * (b * cxWorld + d * cyWorld);
+}
 
 // ---------------------------------------------------------------------------
 // Highlight geometry (rebuilt only when the highlighted net changes)
@@ -741,7 +817,8 @@ function render() {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   // World space (device pixels)
-  ctx.setTransform(m, 0, 0, m, view.tx * dpr, view.ty * dpr);
+  const { a, b, c, d } = currentBasis();
+  ctx.setTransform(a * m, b * m, c * m, d * m, view.tx * dpr, view.ty * dpr);
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   const minLineWorld = 0.6 / m; // keep thin traces visible at any zoom
@@ -861,8 +938,7 @@ function render() {
       if (!v.visible) continue;
       const rPx = v.rInner * view.k;
       if (rPx < VIA_TEXT_MIN_PX) continue;
-      const cx = worldToCssX(v.cx);
-      const cy = worldToCssY(v.cy);
+      const [cx, cy] = worldToCss(v.cx, v.cy);
       ctx.font = `${(rPx * 0.6).toFixed(1)}px sans-serif`;
       ctx.fillText(v.labelA, cx - rPx / 2, cy);
       ctx.fillText(v.labelB, cx + rPx / 2, cy);
@@ -884,8 +960,7 @@ function render() {
       if (!p.effectiveDiode) continue;
       const rPx = p.r * view.k;
       if (rPx < PIN_TEXT_MIN_PX) continue;
-      const cx = worldToCssX(p.cx);
-      const cy = worldToCssY(p.cy);
+      const [cx, cy] = worldToCss(p.cx, p.cy);
       if (cx < -40 || cx > cssW + 40 || cy < -20 || cy > cssH + 20) continue;
       const fs = Math.min(Math.max(rPx * 1.1, 9), 16);
       ctx.font = `${fs.toFixed(1)}px sans-serif`;
@@ -919,8 +994,7 @@ function setupInteraction() {
     (e) => {
       e.preventDefault();
       const [cx, cy] = rectPos(e);
-      const wx = cssToWorldX(cx);
-      const wy = cssToWorldY(cy);
+      const [wx, wy] = cssToWorld(cx, cy);
       // Scale the zoom step with the actual wheel delta so trackpads (many tiny
       // deltas) stay smooth and a mouse notch is a gentle step. Clamp the delta
       // so a momentum flick can't jump the view.
@@ -930,9 +1004,10 @@ function setupInteraction() {
         view.kFit * 0.05,
         Math.min(view.kFit * 1000, view.k * factor),
       );
+      const { a, b, c, d } = currentBasis();
       view.k = k;
-      view.tx = cx - wx * k;
-      view.ty = cy - wy * k;
+      view.tx = cx - k * (a * wx + c * wy);
+      view.ty = cy - k * (b * wx + d * wy);
       requestRender();
     },
     { passive: false },
@@ -963,7 +1038,8 @@ function setupInteraction() {
     if (e.target !== canvas) return; // ignore hover over the controls/panels
     // Hover pick
     const tol = PICK_PX / view.k;
-    const hit = pick(cssToWorldX(cx), cssToWorldY(cy), tol);
+    const [wx, wy] = cssToWorld(cx, cy);
+    const hit = pick(wx, wy, tol);
     const net = hit ? netOf(hit) : null;
     const info = hit ? infoOf(hit) : null;
     if (net !== hoverNet || info !== hoverInfo) {
@@ -982,7 +1058,8 @@ function setupInteraction() {
     if (moved) return; // was a pan, not a click
     const [cx, cy] = rectPos(e);
     const tol = PICK_PX / view.k;
-    const hit = pick(cssToWorldX(cx), cssToWorldY(cy), tol);
+    const [wx, wy] = cssToWorld(cx, cy);
+    const hit = pick(wx, wy, tol);
     if (hit) {
       selectedNet = netOf(hit);
       selectedInfo = infoOf(hit);
@@ -996,6 +1073,25 @@ function setupInteraction() {
   });
 
   window.addEventListener("resize", requestRender);
+
+  // Keyboard shortcuts: R = rotate 90 deg, M = mirror. Ignored while typing
+  // into a text field (e.g. the net/part search box or width slider).
+  window.addEventListener("keydown", (e) => {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    const tag = document.activeElement && document.activeElement.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (!scene) return;
+    if (e.key === "r" || e.key === "R") {
+      setOrientation((view.rot + 1) % 4, view.mirror);
+    } else if (e.key === "m" || e.key === "M") {
+      setOrientation(view.rot, !view.mirror);
+    } else {
+      return;
+    }
+    syncOrientationButtons();
+    requestRender();
+    e.preventDefault();
+  });
 }
 
 function netOf(hit) {
@@ -1156,6 +1252,28 @@ function buildControls() {
     requestRender();
   };
   controls.appendChild(dataBtn);
+
+  // Rotate (90-deg steps) and mirror (horizontal flip) - also bound to the
+  // R / M keyboard shortcuts (see setupInteraction).
+  rotateBtnEl = document.createElement("button");
+  rotateBtnEl.title = "Shortcut: R";
+  rotateBtnEl.onclick = () => {
+    setOrientation((view.rot + 1) % 4, view.mirror);
+    syncOrientationButtons();
+    requestRender();
+  };
+  controls.appendChild(rotateBtnEl);
+
+  mirrorBtnEl = document.createElement("button");
+  mirrorBtnEl.textContent = "Mirror";
+  mirrorBtnEl.title = "Shortcut: M";
+  mirrorBtnEl.onclick = () => {
+    setOrientation(view.rot, !view.mirror);
+    syncOrientationButtons();
+    requestRender();
+  };
+  controls.appendChild(mirrorBtnEl);
+  syncOrientationButtons();
 
   // Reset view
   const resetBtn = document.createElement("button");
@@ -1335,10 +1453,14 @@ function fitToPoints(pts) {
   const ch = canvas.clientHeight || 1;
   const w = maxX - minX || 1;
   const h = maxY - minY || 1;
-  const k = Math.min(cw / w, ch / h) * 0.6;
-  view.k = Math.max(view.kFit * 0.05, Math.min(view.kFit * 1000, k));
-  view.tx = cw / 2 - ((minX + maxX) / 2) * view.k;
-  view.ty = ch / 2 - ((minY + maxY) / 2) * view.k;
+  const rotated = (view.rot & 1) === 1;
+  const extW = rotated ? h : w;
+  const extH = rotated ? w : h;
+  const k = Math.max(
+    view.kFit * 0.05,
+    Math.min(view.kFit * 1000, Math.min(cw / extW, ch / extH) * 0.6),
+  );
+  centerViewOn((minX + maxX) / 2, (minY + maxY) / 2, k);
 }
 
 // Pan (without zooming) so the bounding box of `pts` is centred in the view.
@@ -1354,10 +1476,7 @@ function centerOnPoints(pts) {
     if (x > maxX) maxX = x;
     if (y > maxY) maxY = y;
   }
-  const cw = canvas.clientWidth || 1;
-  const ch = canvas.clientHeight || 1;
-  view.tx = cw / 2 - ((minX + maxX) / 2) * view.k;
-  view.ty = ch / 2 - ((minY + maxY) / 2) * view.k;
+  centerViewOn((minX + maxX) / 2, (minY + maxY) / 2, view.k);
 }
 
 // ---------------------------------------------------------------------------
@@ -1570,6 +1689,8 @@ function loadScene(json) {
   hoverInfo = selectedInfo = null;
   searchPins = null;
   highlightCache = { net: undefined, buckets: null };
+  view.rot = 0;
+  view.mirror = false;
   resizeCanvas();
   fitToBounds();
   buildControls();
@@ -1651,7 +1772,8 @@ window.pcbDebug = {
   },
   load: loadScene,
   pick(cssX, cssY) {
-    const h = pick(cssToWorldX(cssX), cssToWorldY(cssY), PICK_PX / view.k);
+    const [wx, wy] = cssToWorld(cssX, cssY);
+    const h = pick(wx, wy, PICK_PX / view.k);
     return h ? { type: h.type, net: netOf(h) } : null;
   },
 };
