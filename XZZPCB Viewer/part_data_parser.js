@@ -275,7 +275,7 @@ class PartDataParser {
     // Parse pin sub-types
     const subParts = [];
     while (this.offset < blockEnd - 4) {
-      const subPart = this.parsePinSubType();
+      const subPart = this.parsePinSubType(blockEnd);
       if (subPart) {
         subParts.push(subPart);
       } else {
@@ -283,8 +283,17 @@ class PartDataParser {
       }
     }
 
-    const un4 = this.dataView.getUint32(this.offset, true);
-    this.offset += 4;
+    // The trailing dword only exists when the sub-types stopped short of the
+    // block end. A pin whose last sub-type is a bare net index (no diode
+    // reading field) consumes those 4 bytes itself, so read un4 conditionally
+    // and always resync to block_end - obdata.py does the same via
+    // `pos = block_end`. Advancing unconditionally overshoots by 4 and
+    // desynchronises every following sub-block.
+    let un4 = 0;
+    if (this.offset <= blockEnd - 4) {
+      un4 = this.dataView.getUint32(this.offset, true);
+    }
+    this.offset = blockEnd;
 
     return {
       type: 'sub_type_09',
@@ -305,7 +314,7 @@ class PartDataParser {
   }
 
   // Parse pin sub-types
-  parsePinSubType() {
+  parsePinSubType(blockEnd) {
     if (this.offset >= this.dataView.byteLength) {
       return null;
     }
@@ -315,7 +324,7 @@ class PartDataParser {
 
     switch (pinType) {
       case 0x00:
-        return this.parsePinSubType00();
+        return this.parsePinSubType00(blockEnd);
       case 0x01:
         return this.parsePinSubType01();
       case 0x02:
@@ -329,12 +338,22 @@ class PartDataParser {
   }
 
   // Parse pin sub-type 00 (pin net)
-  parsePinSubType00() {
+  parsePinSubType00(blockEnd) {
+    const end = blockEnd === undefined ? this.dataView.byteLength : blockEnd;
+
     const netIndex = this.dataView.getUint32(this.offset, true);
     this.offset += 4;
 
-    const diodeReadingSize = this.dataView.getUint32(this.offset, true);
-    this.offset += 4;
+    // The diode-reading size field is optional. When the net index lands in the
+    // last 4 bytes of the pin block there is no size field at all; reading one
+    // anyway picks up the *next* sub-block's header (e.g. 09 3d 00 00 -> 15625)
+    // and the bogus length throws, which drops the whole part. obdata.py guards
+    // this with `if pos >= block_end - 4: diode_reading_size = 0`.
+    let diodeReadingSize = 0;
+    if (this.offset < end - 4) {
+      diodeReadingSize = this.dataView.getUint32(this.offset, true);
+      this.offset += 4;
+    }
 
     let diodeReading = '';
     if (diodeReadingSize > 0) {

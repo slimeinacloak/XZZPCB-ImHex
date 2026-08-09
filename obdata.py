@@ -10,11 +10,6 @@ from datetime import datetime
 from Crypto.Cipher import DES
 from Crypto.Util.Padding import unpad
 
-# --- Standalone vendoring -------------------------------------------------------
-# Self-contained copy of XZZ-Downloader/xzz/obdata.py for the XZZPCB-ImHex repo.
-# The three tiny `xzz` package dependencies (ObdataError, the package logger, and
-# the config-folder path) are inlined here so the file runs on its own; the
-# parsing and .obdata writing logic is byte-for-byte identical to the original.
 import argparse
 import logging
 
@@ -542,7 +537,9 @@ def combine_post_v6_and_part_data(file_name, post_v6_data, part_data):
                         pass
 
         if "bitmap" in post_v6_data["PCB Attachment"].keys():
-            log.debug(f"Bitmap data found in PCB Attachment: {post_v6_data['PCB Attachment']['bitmap']}")
+            log.debug(
+                f"Bitmap data found in PCB Attachment: {post_v6_data['PCB Attachment']['bitmap']}"
+            )
             if post_v6_data["PCB Attachment"]["bitmap"] == {}:
                 log.debug("Bitmap data empty, skipping")
             elif (
@@ -743,7 +740,9 @@ def make_components_text(component_rows):
     for ref, code, value in sorted(cleaned, key=component_sort_key):
         components_text += f"{ref} {code} {value}\n"
     if dropped:
-        log.debug(f"Dropped {dropped} component line(s) with a bad refdes / empty value")
+        log.debug(
+            f"Dropped {dropped} component line(s) with a bad refdes / empty value"
+        )
     components_text += "COMPONENTS_DATA_END\n"
     return components_text
 
